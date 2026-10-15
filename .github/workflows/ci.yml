@@ -1,0 +1,79 @@
+name: Validación y paquete Debian
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar dependencias del sistema
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg python3-tk xvfb xauth strace dpkg-dev tkdnd
+      - name: Comprobar sintaxis Python
+        run: python3 -m compileall -q isg_core.py isg_gui.py isg_batch.py isg_privacy.py isg_cli.py
+      - name: Pruebas unitarias y de fiabilidad
+        run: python3 -m unittest discover -s tests -v
+      - name: Revisión de privacidad local
+        run: ISG_REQUIRE_STRACE=1 bash scripts/privacy-check.sh
+      - name: Prueba de recuperación real
+        run: python3 test_core.py && python3 qa_variants.py
+      - name: Smoke test interfaz gráfica
+        run: xvfb-run -a python3 tests/test_gui_smoke.py
+      - name: Opciones de privacidad en interfaz
+        run: xvfb-run -a python3 tests/test_gui_privacy.py
+      - name: Pruebas de arrastrar archivos
+        run: xvfb-run -a python3 tests/test_gui_drop.py
+      - name: Salidas automáticas en la carpeta de entrada
+        run: xvfb-run -a python3 tests/test_gui_default_output.py
+      - name: Integración lotes gráficos
+        run: xvfb-run -a python3 tests/test_gui_batch_integration.py
+      - name: Integración recuperación gráfica
+        run: xvfb-run -a python3 tests/test_gui_recovery_batch.py
+      - name: Reset de parámetros y renombrado del MP4
+        run: xvfb-run -a python3 tests/test_gui_reset_and_rename.py
+      - name: Revisar textos y estimación en la interfaz
+        run: xvfb-run -a python3 tests/test_gui_copy.py
+      - name: Comprobar barras de desplazamiento automáticas
+        run: xvfb-run -a python3 tests/test_gui_scrollbars.py
+      - name: Verificar icono, ventana y lanzador
+        run: xvfb-run -a python3 tests/test_gui_identity.py
+      - name: Construir paquete Debian
+        run: bash packaging/build_deb.sh
+      - name: Revisar paquete
+        run: |
+          dpkg-deb --info dist/isg-desktop_$(python3 -c "from isg_core import VERSION; print(VERSION)")_all.deb
+          dpkg-deb --contents dist/isg-desktop_$(python3 -c "from isg_core import VERSION; print(VERSION)")_all.deb
+          sha256sum dist/isg-desktop_$(python3 -c "from isg_core import VERSION; print(VERSION)")_all.deb > dist/SHA256SUMS
+      - name: Adjuntar .deb y SHA256SUMS
+        uses: actions/upload-artifact@v4
+        with:
+          name: isg-desktop-deb
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS
+
+  debian-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [bookworm, trixie]
+    runs-on: ubuntu-latest
+    container: debian:${{ matrix.release }}
+    timeout-minutes: 25
+    steps:
+      - name: Instalar utilidades y dependencias de prueba
+        run: apt-get update && apt-get install -y ca-certificates git python3 python3-tk ffmpeg xvfb xauth dpkg-dev tkdnd
+      - uses: actions/checkout@v4
+      - name: Pruebas y paquete en Debian
+        run: |
+          python3 -m unittest discover -s tests -v
+          python3 test_core.py
+          xvfb-run -a python3 tests/test_gui_privacy.py
+          xvfb-run -a python3 tests/test_gui_reset_and_rename.py
+          xvfb-run -a python3 tests/test_gui_scrollbars.py
+          bash packaging/build_deb.sh
+          dpkg-deb --info dist/isg-desktop_$(python3 -c "from isg_core import VERSION; print(VERSION)")_all.deb
